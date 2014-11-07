@@ -8,12 +8,12 @@ use StdClass;
  *
  * Class to use for all abstraction of Moip's API
  */
-class Moip extends Validator 
+class Moip extends Validator
 {
 	/**
 	 * Use for all abstraction of Moip's API
 	 *
-	 * @var new Api 
+	 * @var new Api
 	 **/
 	private $moip;
 
@@ -32,60 +32,133 @@ class Moip extends Validator
 	private $response;
 
 	/**
+	 * Data wil be sent to MoIP
+	 *
+	 * @var string
+	 **/
+	private $data;
+
+	/**
 	 * Method that sends data to Moip and creates op chekout
-	 * @param array or object $data 
+	 * @param array or object $data
 	 * @return response moip
 	 */
-	public function sendMoip($data)
+	public function sendMoip( array $data)
 	{
-		if (! is_object($data)) {
-			$data = (object) $data;
-		}
-		
-		$this->initialize();
-		$this->validatorData($data, $this->config);
-		
-		if ($this->validatorValidate($this->config->validate) === 'Basic') {
-			$this->moip->setUniqueID($data->unique_id);
-			$this->moip->setValue($data->value);
-			$this->moip->setReason($data->reason);
+		$data = $this->initialize($data);
+		$this->validatorSend($data, $this->config);
+		$this->moip->setReason($data->reason);
+		$this->moip->setValue($data->values->value);
+		$this->moip->setAdds($data->values->adds);
+		$this->moip->setDeduct($data->values->deduct);
+		$this->moip->setUniqueID($data->unique_id);
+
+		foreach ($data->payment as $key => $value) {
+			if ($value === false) continue;
+			else $this->moip->addPaymentWay($key);
 		}
 
+		if ($this->config->parcel->active === true) {
+			$this->moip->addParcel(
+				$data->parcel->min, 
+				$data->parcel->max, 
+				$data->parcel->rate, 
+				$data->parcel->transfer
+			);
+		}
+		if ($this->config->comission->active === true) {
+			$this->moip->addComission(
+				$data->comission->reason,
+				$data->comission->receiver,
+				$data->comission->value,
+				$data->comission->percentageValue,
+				$data->comission->ratePayer
+			);
+		}
+		$this->moip->setBilletConf(
+			$data->billet->expiration,
+			$data->billet->workingDays,
+			[
+				$data->billet->instructions->firstLine,
+				$data->billet->instructions->secondLine,
+				$data->billet->instructions->lastLine
+			],
+			$data->billet->urlLogo
+		);
+		if (! empty($data->message->firstLine)) {
+			$this->moip->addMessage($data->message->firstLine);	
+		}
+		if (! empty($data->message->secondLine)) {
+			$this->moip->addMessage($data->message->secondLine);	
+		}
+		if (! empty($data->message->lastLine)) {
+			$this->moip->addMessage($data->message->lastLine);	
+		}
+
+		$this->moip->setReturnURL($data->returnURL);
+
+		if (! empty($data->notificationURL)) {
+			$this->moip->setNotificationURL($data->notificationURL);
+		}
+
+		$this->moip->setPayer($data->payer);
+		
+		$this->getReceiver($data);
 		$this->getValidate();
 		return $this->response($this->moip->send());
 	}
 
 	/**
-	 * Method that returns an object with the token request, 
+	 * Method that returns an object with the token request,
 	 * link, sending XML and XML return
 	 * @param  object $send Return of sendMoip method
-	 * @return object token request, link, sending XML 
+	 * @return object token request, link, sending XML
 	 * and XML return
 	 */
 	public function response($send = '')
 	{
 		if (! empty($send)) {
 			$answer = $this->moip->getAnswer();
+			//dd($answer);
+			$this->validatorResponseError($answer->error);
 			$this->response = new StdClass;
-			$this->response->token = $answer->token;
+			$this->response->response 	 = $answer->response;
+			$this->response->error 		 = $answer->error;
+			$this->response->token 		 = $answer->token;
 			$this->response->payment_url = $answer->payment_url;
-			$this->response->xmlSend = $this->moip->getXML();
-			$this->response->xmlGet  = $send->xml;
+			$this->response->xmlSend 	 = $this->moip->getXML();
+			$this->response->xmlGet  	 = $send->xml;
 		}
+
 		return $this->response;
 	}
 
 	/**
-	 * Method required to start integration. 
-	 * Authentication and environment that the request will be sent
-	 * @return null
+	 * Checks if the recipient sends login MoIP
+	 * @param  object $data 
+	 * @return $this
 	 */
-	private function initialize()
+	private function getReceiver($data)
+	{
+		if (! empty($data->receiver)) {
+			$this->moip->setReceiver($data->receiver);
+		}
+
+		return $this;
+	}	
+
+	/**
+	 * Method required to start integration.
+	 * Authentication and environment that the request will be sent
+	 * @return object \SOSTheBlack\Moip\Validator
+	 */
+	private function initialize($data)
 	{
 		$this->moip = new Api;
-		$this->config = $this->validatorConfig(Config::get('moip'));
+		$this->config = $this->validatorConfig(Config::get('sostheblack::moip'));
 		$this->getEnvironment();
 		$this->authentication();
+		return $this->validatorData($data);
 	}
 
 	/**
@@ -94,17 +167,17 @@ class Moip extends Validator
 	 */
 	private function authentication()
 	{
-		if ($this->validatorCredential($this->config) === true) {
+		if ($this->validatorCredential($this->config->credentials) === true) {
 			$this->moip->setCredential([
-				'key'	=> $this->config->key,
-				'token' => $this->config->token,
+				'key'	=> $this->config->credentials->key,
+				'token' => $this->config->credentials->token,
 			]);
 		}
 		return $this;
 	}
 
 	/**
-	 * Validation to determine whether the data sent will be basic, 
+	 * Validation to determine whether the data sent will be basic,
 	 * or for identifying user
 	 * @return $this
 	 */
